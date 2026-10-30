@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hlmicro"
+version = "1.0.0"
+description = "Capture, parsing and validation tools for Hyperliquid market microstructure research"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+capture = ["websocket-client>=1.6"]
+plot = ["matplotlib>=3.7"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+hlmicro = "hlmicro.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["hlmicro*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::FutureWarning"]

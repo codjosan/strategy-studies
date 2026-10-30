@@ -1,0 +1,136 @@
+# hlmicro
+
+Capture, parsing and validation tools for market-microstructure research on
+Hyperliquid perpetuals, with cross-venue reference data from Binance, OKX and
+Bybit.
+
+The package is a three-stage pipeline:
+
+```
+capture  ->  daily CSV files  ->  parse  ->  validate
+```
+
+| Stage | Module | Purpose |
+|---|---|---|
+| capture | `hlmicro.capture` | Collectors for top-of-book snapshots (REST polling and websocket push) writing day-rotated CSV files |
+| parse | `hlmicro.parse` | Chunked, fault-tolerant loaders for order books, trade tapes, liquidations and funding |
+| validate | `hlmicro.validate` | Event studies and backtests with explicit, pre-stated pass/fail criteria |
+
+Every study runs from a single command and is also importable: each module
+exposes a `Config` dataclass, `run(config) -> Result` and `render(result) -> str`.
+
+## Install
+
+```bash
+pip install -e ".[capture,plot,dev]"
+```
+
+Python 3.10+, with numpy, pandas and scipy. `websocket-client` is needed only
+for websocket capture, `matplotlib` only for plots.
+
+## Quick start with synthetic data
+
+No capture data is needed to try the pipeline:
+
+```bash
+python -m hlmicro synth --out sample_data --days 4
+export HLMICRO_CAPTURE_DIR=sample_data
+
+python -m hlmicro inventory
+python -m hlmicro tp-multifold --symbol BTC --hold-min 30 --cooldown-min 10
+python -m hlmicro hf-features --symbol BTC \
+    --trades-csv results/tp_multifold/tp_trades_btc.csv --filter tp_pct=0,stop_pct=-1.0
+python -m hlmicro source-compare --symbol BTC --threshold 2.5
+python -m hlmicro lead-lag --symbol BTC
+python -m hlmicro cex-hl-lag --symbols BTC,SOL
+python -m hlmicro multi-gate --symbol BTC
+python -m hlmicro funding-settlement --symbol BTC
+```
+
+The synthetic generator writes every file family in the production schemas
+(including gzipped closed days). Its price and order-flow processes are not
+calibrated to real markets, so study results on it are not meaningful; it
+exists to exercise the code.
+
+`python -m hlmicro` with no arguments lists all commands; each takes `--help`.
+Lists of negative numbers must be attached with `=`, e.g. `--stop-levels=-2.5,-1.0`.
+
+## Commands
+
+| Command | Stage | Description |
+|---|---|---|
+| `capture-rest` | capture | Poll top-5 depth on Hyperliquid, Binance, OKX and Bybit every N seconds |
+| `capture-ws` | capture | Record every Hyperliquid `l2Book` and OKX `books5` update |
+| `inventory` | parse | Files, date coverage, rows per coin, malformed rows and truncated files per family |
+| `synth` | parse | Write a synthetic capture directory |
+| `tp-multifold` | validate | Stop/take-profit grid for the dual-window imbalance z-score signal across chronological folds |
+| `source-compare` | validate | Same signal driven by websocket vs 5-second imbalance over identical minutes |
+| `hf-features` | validate | Within-minute book features (update rate, imbalance volatility, drift) tested against trade outcomes |
+| `lead-lag` | validate | Event study of the Hyperliquid mid after large OKX/Bybit prints |
+| `cex-hl-lag` | validate | Hyperliquid repricing after sharp moves on a leading venue |
+| `multi-gate` | validate | Short-horizon AND-gate rules on flow, imbalance and VWAP deviation, with passive-fill simulation |
+| `funding-settlement` | validate | Returns around hourly funding settlement, bucketed by funding rate |
+
+## Data files
+
+Daily files are named `<prefix>_YYYYMMDD.csv`; closed days may be gzipped
+(`.csv.gz`). Timestamps are Unix milliseconds, UTC.
+
+| Prefix | Written by | Columns |
+|---|---|---|
+| `obi_5s` | `capture-rest` | `ts_ms, coin, venue, mid, bid1_px, ask1_px, bid_qty_5, ask_qty_5, bid_ntl_5, ask_ntl_5, obi_qty, obi_ntl, spread_bps` |
+| `obi_ws` | `capture-ws` | as `obi_5s`, plus `recv_ts_ms` (local receive time) after `ts_ms` |
+| `hl_trades` | trade-tape collector | `ts_ms, coin, px, sz, side, tid, user_a, user_b` |
+| `okx_trades`, `bybit_trades` | trade-tape collector | `ts_ms, recv_ts_ms, coin, px, sz, side, tid` |
+| `hl_liquidations` | trade-tape collector | `ts_ms, coin, px, sz, side, tid, liq_user` |
+| `hl_funding_<COIN>.csv` | saved API history | `time, coin, fundingRate` (not daily) |
+
+Order-book imbalance is `(bid - ask) / (bid + ask)` over the top five levels,
+by quantity (`obi_qty`) and by notional (`obi_ntl`). Trade side is the
+aggressor: Hyperliquid writes `B` (buy) and `A` (sell); the parse layer also
+accepts `S`, `buy`/`sell` and `bid`/`ask`. For liquidations, `A` is a
+liquidated long (forced sell) and `B` a liquidated short (forced buy).
+
+## How files are read
+
+All loaders go through `hlmicro.parse.reader.iter_chunks`:
+
+* files are streamed in chunks and reduced to one symbol before aggregation;
+  per-bucket means are accumulated as sums and counts, so results do not
+  depend on chunk boundaries
+* rows with non-numeric values, missing fields or surplus fields are dropped
+  individually, and timestamps outside the file's date (+/- one day) are rejected
+* a truncated gzip stream (interrupted write, full disk) yields every complete
+  row before the break instead of failing the whole day; an incomplete final
+  line (a write in progress) is ignored
+* when a date has both `.csv` and `.csv.gz`, the plain file is used
+
+`inventory` reports what was dropped or salvaged per file family.
+
+## Costs
+
+Fees come from `hlmicro.config.FeeModel` (per side: taker 4.32 bps, maker
+1.44 bps; half-spread 0.14 bps). Every study accepts fee overrides on the
+command line.
+
+## Tests
+
+```bash
+pytest
+```
+
+The suite generates two days of synthetic data and covers the capture
+formatting and rotation, every loader (including damaged and truncated
+files), and an end-to-end run of each study.
+
+## Layout
+
+```
+hlmicro/
+  capture/   book.py (metrics), writer.py (day-rotating CSV), rest_books.py, ws_books.py
+  parse/     reader.py, files.py, books.py, trades.py, liquidations.py, funding.py, inventory.py
+  validate/  common.py, tp_multifold.py, source_compare.py, hf_features.py, lead_lag.py,
+             cex_hl_lag.py, multi_gate.py, funding_settlement.py
+  config.py  schemas.py  synthetic.py  cli.py  __main__.py
+tests/
+```
