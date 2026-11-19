@@ -8,8 +8,8 @@ import pandas as pd
 CHUNK = 200_000
 DAY_S = 86_400
 FULL_COLS = {
-    "hl_trades_": ["ts_ms", "coin", "px", "sz", "side", "tid", "user_a", "user_b"],
-    "hl_liquidations_": ["ts_ms", "coin", "px", "sz", "side", "tid", "liq_user"],
+    "hl_trades_": ["ts_ms", "coin", "px", "sz", "side", "tid"],
+    "hl_liquidations_": ["ts_ms", "coin", "px", "sz", "side", "tid"],
 }
 
 def glob_daily(directory: Path, prefix: str) -> dict[str, Path]:

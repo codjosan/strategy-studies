@@ -99,6 +99,15 @@ def test_tape_per_bucket_counts_hyperliquid_sells(capture_dir):
     assert 0.3 < share < 0.7
 
 
+def test_synthetic_identity_columns_are_omitted(capture_dir):
+    for prefix, forbidden in (
+        ("hl_trades", {"user_a", "user_b"}),
+        ("hl_liquidations", {"liq_user"}),
+    ):
+        path = discover(capture_dir, prefix)[0]
+        assert not forbidden.intersection(pd.read_csv(path, nrows=0).columns)
+
+
 def test_load_tape_canonical_sides(capture_dir):
     tape = load_tape(discover(capture_dir, "okx_trades"), "BTC")
     assert set(tape["side"]) == {"B", "A"}
@@ -109,6 +118,17 @@ def test_load_tape_canonical_sides(capture_dir):
 def test_liquidations_and_minute_flow(capture_dir):
     liqs = load_liquidations(discover(capture_dir, "hl_liquidations"), "SOL")
     assert len(liqs) and set(liqs["coin"]) == {"SOL"}
+    assert "liq_user" not in liqs
     flow = minute_liquidation_flow(liqs)
     assert flow["liq_count"].sum() == len(liqs)
     assert flow["long_liq_ntl"].sum() == pytest.approx(liqs.loc[liqs["side"] == "A", "notional"].sum())
+
+
+def test_liquidation_loader_discards_account_identifier(tmp_path):
+    path = tmp_path / "hl_liquidations_20260101.csv.gz"
+    with gzip.open(path, "wt") as f:
+        f.write("ts_ms,coin,px,sz,side,tid,liq_user\n")
+        f.write(f"{DAY0},BTC,100,2,A,123,private-field\n")
+    liqs = load_liquidations([path], "BTC")
+    assert liqs["notional"].tolist() == [200.0]
+    assert "liq_user" not in liqs

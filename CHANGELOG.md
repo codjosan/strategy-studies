@@ -18,16 +18,12 @@ synthetic data generator and a test suite.
 | `scalp_multi_gate.py` | `hlmicro multi-gate` |
 | `funding_flip_scalp_test.py` | `hlmicro funding-settlement` |
 
-### Verification
 
-Each study was run against its standalone predecessor on the same synthetic
-capture data (4 days, 2 coins, all file families). Trades, events, fold
-statistics and output files match. The largest numeric difference is about 1e-7
-relative, from parsing as float64 where some scripts used float32; no trade or
-event changed as a result. The exceptions are the intentional changes below.
 
 ### Fixes
 
+* Personal account identifiers are no longer included in generated trade and
+  liquidation files or loaded into liquidation results.
 * **Trade-side labels in `multi-gate`.** Sell volume was counted only for side
   `S`, but the Hyperliquid tape labels sells `A`. Sell flow was therefore always
   zero: trade-flow imbalance was +1 whenever any trade printed, the sell rules

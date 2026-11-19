@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Capture, parsing and validation tools for Hyperliquid market microstructure research"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",

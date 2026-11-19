@@ -133,10 +133,6 @@ def _event_times(rng, n_seconds: int, mean_interval_s: float) -> np.ndarray:
     return t[t < n_seconds * 1000]
 
 
-def _addresses(rng, n: int) -> np.ndarray:
-    return np.array(["0x" + "".join(rng.choice(list("0123456789abcdef"), 40)) for _ in range(n)])
-
-
 def _write_daily(frame: pd.DataFrame, out: Path, prefix: str, columns, start_ms: int,
                  days: int, gzip_closed: bool, day_key: str = "ts_ms") -> None:
     day_index = (frame[day_key].to_numpy() - start_ms) // DAY_MS
@@ -156,8 +152,6 @@ def generate(out_dir: Path, config: SyntheticConfig | None = None) -> Path:
     rng = np.random.default_rng(cfg.seed)
     start_ms = int(pd.Timestamp(cfg.start, tz="UTC").timestamp() * 1000)
     n_seconds = cfg.days * 86_400
-    users = _addresses(rng, 64)
-
     books, ws_books, hl_trades, cex_trades, liqs = [], [], [], {k: [] for k in CEX_TRADE_PREFIXES}, []
     for coin, price0 in cfg.coins.items():
         market = _Market(rng, n_seconds, price0, cfg.hl_lag_s)
@@ -180,13 +174,11 @@ def generate(out_dir: Path, config: SyntheticConfig | None = None) -> Path:
         buy = rng.random(len(ts)) < 0.5 + 0.25 * np.tanh(market.latent[market._sec(ts)])
         px = _quantize(mid * np.where(buy, 1 + 0.15e-4, 1 - 0.15e-4), params["tick"]["hyperliquid"])
         notional = params["hl_trade_usd"] * rng.lognormal(0, 1.4, len(ts))
-        a_idx, b_idx = rng.integers(0, len(users), (2, len(ts)))
         hl_trades.append(pd.DataFrame({
             "ts_ms": ts, "coin": coin, "px": np.round(px, 6),
             "sz": np.maximum(np.round(notional / px, params["sz_decimals"]), 10.0 ** -params["sz_decimals"]),
             "side": np.where(buy, "B", "A"),
             "tid": np.cumsum(rng.integers(1, 1000, len(ts))) + 10**12,
-            "user_a": users[a_idx], "user_b": users[b_idx],
         }))
 
         if coin in cfg.cex_tape_coins:
@@ -211,12 +203,10 @@ def generate(out_dir: Path, config: SyntheticConfig | None = None) -> Path:
             side = "A" if rng.random() < 0.5 else "B"
             sign = -1 if side == "A" else 1
             px = market.price_at(ts, "hyperliquid") * (1 + sign * 5e-4)
-            accounts = users[rng.integers(0, len(users), int(rng.integers(1, 6)))]
             liqs.append(pd.DataFrame({
                 "ts_ms": ts, "coin": coin, "px": np.round(px, 6),
                 "sz": np.round(rng.uniform(5_000, 80_000, n_prints) / px, params["sz_decimals"]),
                 "side": side, "tid": rng.integers(10**13, 10**14, n_prints),
-                "liq_user": accounts[rng.integers(0, len(accounts), n_prints)],
             }))
 
         hours = np.arange(0, n_seconds * 1000, 3_600_000, dtype=np.int64) + start_ms

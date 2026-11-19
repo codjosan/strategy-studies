@@ -15,7 +15,7 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 500_000
-TEXT_COLUMNS = ("coin", "venue", "side", "user_a", "user_b", "liq_user")
+TEXT_COLUMNS = ("coin", "venue", "side")
 _BLOCK = 1 << 16
 
 

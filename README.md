@@ -19,6 +19,19 @@ capture  ->  daily CSV files  ->  parse  ->  validate
 Every study runs from a single command and is also importable: each module
 exposes a `Config` dataclass, `run(config) -> Result` and `render(result) -> str`.
 
+## Project history
+
+The nine original research scripts predate this repository and were imported
+into Git in the initial commit on 30 October 2026. The [CHANGELOG](./CHANGELOG.md)
+records how they evolved into this package.
+
+## Data privacy
+
+Do not commit real capture files or wallet/account identifiers. The parser
+discards account identifier fields from its outputs, and `hlmicro synth`
+creates made-up data for examples and tests. Generated captures and results
+are excluded by `.gitignore`.
+
 ## Install
 
 ```bash
@@ -80,9 +93,9 @@ Daily files are named `<prefix>_YYYYMMDD.csv`; closed days may be gzipped
 |---|---|---|
 | `obi_5s` | `capture-rest` | `ts_ms, coin, venue, mid, bid1_px, ask1_px, bid_qty_5, ask_qty_5, bid_ntl_5, ask_ntl_5, obi_qty, obi_ntl, spread_bps` |
 | `obi_ws` | `capture-ws` | as `obi_5s`, plus `recv_ts_ms` (local receive time) after `ts_ms` |
-| `hl_trades` | trade-tape collector | `ts_ms, coin, px, sz, side, tid, user_a, user_b` |
+| `hl_trades` | trade-tape collector | `ts_ms, coin, px, sz, side, tid` |
 | `okx_trades`, `bybit_trades` | trade-tape collector | `ts_ms, recv_ts_ms, coin, px, sz, side, tid` |
-| `hl_liquidations` | trade-tape collector | `ts_ms, coin, px, sz, side, tid, liq_user` |
+| `hl_liquidations` | trade-tape collector | `ts_ms, coin, px, sz, side, tid` |
 | `hl_funding_<COIN>.csv` | saved API history | `time, coin, fundingRate` (not daily) |
 
 Order-book imbalance is `(bid - ask) / (bid + ask)` over the top five levels,

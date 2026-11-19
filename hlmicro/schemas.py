@@ -23,7 +23,7 @@ BOOK_WS_COLUMNS = (
 
 # Trade tapes. Hyperliquid labels the aggressor side "B" (buy) / "A" (sell).
 HL_TRADES_PREFIX = "hl_trades"
-HL_TRADES_COLUMNS = ("ts_ms", "coin", "px", "sz", "side", "tid", "user_a", "user_b")
+HL_TRADES_COLUMNS = ("ts_ms", "coin", "px", "sz", "side", "tid")
 
 CEX_TRADE_PREFIXES = {"okx": "okx_trades", "bybit": "bybit_trades"}
 CEX_TRADES_COLUMNS = ("ts_ms", "recv_ts_ms", "coin", "px", "sz", "side", "tid")
@@ -31,7 +31,7 @@ CEX_TRADES_COLUMNS = ("ts_ms", "recv_ts_ms", "coin", "px", "sz", "side", "tid")
 # Liquidation prints. side "A" = liquidated long (forced sell),
 # side "B" = liquidated short (forced buy).
 HL_LIQUIDATIONS_PREFIX = "hl_liquidations"
-HL_LIQUIDATIONS_COLUMNS = ("ts_ms", "coin", "px", "sz", "side", "tid", "liq_user")
+HL_LIQUIDATIONS_COLUMNS = ("ts_ms", "coin", "px", "sz", "side", "tid")
 
 # Hourly funding history (one file per coin, not daily).
 FUNDING_FILE_TEMPLATE = "hl_funding_{coin}.csv"
