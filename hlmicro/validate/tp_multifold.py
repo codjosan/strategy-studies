@@ -34,7 +34,10 @@ from ..cli import add_common_args, add_date_args, csv_list, setup_logging
 from ..config import DEFAULT_FEES, default_capture_dir
 from ..parse import discover, minute_grid
 from ..schemas import BOOK_REST_PREFIX
-from .common import describe, rolling_zscore, rule
+from . import obi_signal
+from .common import rule
+from .obi_signal import ExitSpec, SignalSpec, split_folds
+from .obi_signal import trade_stats as cell_stats
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +64,10 @@ class Config:
     start: str | None = None
     end: str | None = None
 
+    @property
+    def signal(self) -> SignalSpec:
+        return SignalSpec(self.threshold, self.primary_window_min, self.confirm_window_min)
+
 
 def simulate(grid: pd.DataFrame, cfg: Config, stop_pct: float | None,
              tp_pct: float | None) -> list[dict]:
@@ -69,77 +76,9 @@ def simulate(grid: pd.DataFrame, cfg: Config, stop_pct: float | None,
     ``stop_pct`` is negative (``-1.0`` = exit at -1%); ``tp_pct`` positive.
     ``None`` (or 0 for TP) disables that exit.
     """
-    obi = grid["obi_ntl"].to_numpy()
-    mid = grid["mid"].to_numpy()
-    ts_ms = grid["ts_ms"].to_numpy()
-    z_primary = rolling_zscore(obi, cfg.primary_window_min)
-    z_confirm = rolling_zscore(obi, cfg.confirm_window_min)
-    fee_pct = cfg.fee_bps / 100.0
-
-    trades: list[dict] = []
-    side = None
-    entry_idx = deadline = 0
-    entry_px = 0.0
-    last_exit = -10**9
-    mae = mfe = 0.0
-    for i in range(max(cfg.primary_window_min, cfg.confirm_window_min), len(grid)):
-        px = mid[i]
-        if not px > 0:
-            continue
-        if side is not None:
-            ret = (px - entry_px) / entry_px * 100
-            if side == "SHORT":
-                ret = -ret
-            mae, mfe = min(mae, ret), max(mfe, ret)
-            reason = None
-            if stop_pct is not None and ret <= stop_pct:
-                reason = "stop"
-            elif tp_pct and ret >= tp_pct:
-                reason = "tp"
-            elif i >= deadline:
-                reason = "timeout"
-            if reason:
-                trades.append({
-                    "side": side, "entry_ts_ms": int(ts_ms[entry_idx]), "exit_ts_ms": int(ts_ms[i]),
-                    "entry_px": float(entry_px), "exit_px": float(px),
-                    "minutes_held": i - entry_idx, "exit_reason": reason,
-                    "ret_gross_pct": ret, "pnl_pct_net": ret - fee_pct,
-                    "mae_pct": mae, "mfe_pct": mfe,
-                })
-                side = None
-                last_exit = i
-        if side is None and i - last_exit >= cfg.cooldown_min:
-            zp, zc = z_primary[i], z_confirm[i]
-            if np.isnan(zp) or np.isnan(zc):
-                continue
-            if zp > cfg.threshold and zc > cfg.threshold:
-                side = "LONG"
-            elif zp < -cfg.threshold and zc < -cfg.threshold:
-                side = "SHORT"
-            if side:
-                entry_idx, entry_px, deadline = i, px, i + cfg.hold_min
-                mae = mfe = 0.0
-    return trades
-
-
-def split_folds(grid: pd.DataFrame, n_folds: int) -> list[dict]:
-    """Equal-duration chronological folds over the grid's time span."""
-    first, last = int(grid["ts_ms"].iloc[0]), int(grid["ts_ms"].iloc[-1])
-    edges = np.linspace(first, last, n_folds + 1).astype(int)
-    folds = []
-    for k in range(n_folds):
-        start, end = int(edges[k]), int(edges[k + 1])
-        part = grid[(grid["ts_ms"] >= start) & (grid["ts_ms"] < end)].reset_index(drop=True)
-        if len(part):
-            folds.append({"idx": k, "start_ms": start, "end_ms": end,
-                          "days": (end - start) / 86_400_000, "grid": part})
-    return folds
-
-
-def cell_stats(trades: list[dict]) -> dict:
-    s = describe([t["pnl_pct_net"] for t in trades], ddof=1)
-    return {"n": s["n"], "winr": s["win_rate"] * 100 if s["n"] else np.nan,
-            "mean": s["mean"], "sharpe": s["sharpe"], "tstat": s["t"], "sum": s["total"]}
+    exits = ExitSpec(hold_min=cfg.hold_min, cooldown_min=cfg.cooldown_min,
+                     stop_pct=stop_pct, target_pct=tp_pct or None)
+    return obi_signal.simulate(grid, cfg.signal, exits, cfg.fee_bps)
 
 
 @dataclass

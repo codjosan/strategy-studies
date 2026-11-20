@@ -1,5 +1,89 @@
 # Changelog
 
+## 1.1.0
+
+Ten research scripts from the `hl-micro-strategies` collection brought into
+the package, on the shared parse layer, cost model and test fixtures.
+
+| Previous script | Now |
+|---|---|
+| `obi_multifold_cv.py` (v2) | `hlmicro threshold-cv` |
+| `obi_oos_validator.py` | `hlmicro oos-split` |
+| `obi_breakeven_exit.py` | `hlmicro breakeven-exit` |
+| `obi_signal_conditional_exit.py` | `hlmicro signal-exit` |
+| `obi_trend_gate_test.py` | `hlmicro trend-gate` |
+| `obi_config_comparison.py` (v3) | `hlmicro obi-configs` |
+| `tfi_signal_analysis.py` (signals 1 and 3) | `hlmicro tfi-signals` |
+| `scalp_explorer_tick.py` | `hlmicro scalp-explore` |
+| `fast_feature_explorer_v3.py` | `hlmicro feature-explore` |
+| `capture_health.py` | `hlmicro inventory` health checks and `--check` |
+
+### Not imported
+
+| Script | Reason |
+|---|---|
+| `obi_tp_multifold.py` | Already `hlmicro tp-multifold` (1.0.0). |
+| `scalp_multi_gate.py` | Already `hlmicro multi-gate` (1.0.0); this copy predates the trade-side fix. |
+| `live_config_tfi_backtest.py` | Superseded by `obi_config_comparison.py`, whose first configuration per symbol is the same live configuration. |
+| `tfi_signal_analysis.py`, signal 2 | Imbalance with a TFI gate at a fixed horizon; `obi-configs` runs the same gate with stops, take-profit and one position at a time. |
+| `scalp_feature_explorer.py`, `scalp_fill_realism.py` | Minute-resolution predecessors of `scalp_explorer_tick.py`. The one tested feature the tick version lacked, `liq_spike_z`, is in `scalp-explore`. |
+| `liquidation_extractor.py` | Identifies liquidations from counterparty wallet addresses, which this repository does not store. Its burst heuristic predates the `hl_liquidations` feed, which the liquidation-cascade study uses. |
+| `strategy_explorer.py` | Its liquidation strategy needs the extractor's output; the 4-hour EMA trend strategy is outside the microstructure scope and, by its own warning, needs 200+ four-hour bars; the funding strategy reads a CSV from an external engine. |
+| `fast_trigger_analyzer.py`, `fast_trigger_alt_analyzer.py`, `regime_drift_backtester.py` | Analyse `trigger_snapshots.csv` from a separate regime/trigger system; nothing in this repository produces or documents that file. |
+
+### Shared code
+
+* `hlmicro.validate.obi_signal`: one implementation of the imbalance z-score
+  signal and its minute-bar simulator (stop, reversal, target on gross or net
+  return, timeout with extension, cooldown, optional next-bar entry, positions
+  open at the end). `tp-multifold` now uses it; its outputs on the synthetic
+  data are byte-identical to 1.0.0.
+* `hlmicro.validate.passive_fills`: the passive-limit fill simulation, shared
+  by `multi-gate` (outputs unchanged) and `scalp-explore`.
+* `hlmicro.parse.cross_venue_flow`: taker-flow imbalance per bucket on each
+  venue and across venues.
+
+### Fixes relative to the imported scripts
+
+* **Trade-side labels.** The scalp scripts counted sells only for side `S`,
+  but Hyperliquid labels them `A`, the defect fixed in `multi-gate` in 1.0.0:
+  every TFI feature was +1 whenever a trade printed, and long liquidations
+  (side `A`) were never counted. The TFI scripts accepted only `B`/`A` and
+  silently dropped trades labelled `buy`/`sell`. All flow now goes through
+  `aggressor_sign`.
+* **Entry timing in `obi-configs` and `tfi-signals`.** Entries were priced at
+  the opening of the trigger minute, before that minute's mean imbalance or
+  flow was known. They are now priced at the minute's close.
+* **Rolling flow windows in `scalp-explore`.** One tick without trades made
+  the whole window undefined, which at 5-second ticks covered most 15-minute
+  windows. Ticks without trades now count as zero flow.
+* **Low-volume check.** `capture_health.py` compared the day in progress with
+  full days, so a scheduled check failed every morning. The newest day is now
+  left out of the comparison and of the median.
+* **Permutation test in `trend-gate`** uses a generator seeded per run; the
+  script's module-level generator made results depend on call order.
+* Zero-variance z-score windows give NaN instead of +/-inf (`scalp-explore`).
+
+### Behaviour changes relative to the imported scripts
+
+* **Fees** come from `FeeModel` (per side: taker 4.32 bps, maker 1.44 bps;
+  half-spread 0.14 bps). The scripts used 8.6 bps round trip (imbalance
+  studies, feature explorer) or 13.72 / 7.15 / 0.58 bps (TFI studies). Every
+  command takes fee overrides.
+* Stops are negative percentages everywhere (`--stop-pct=-1.0`);
+  `obi_config_comparison.py` used positive magnitudes.
+* `feature-explore`: burst features (from the extractor's output) removed;
+  liquidation features and `obi_qty_avg`, built but never used by any rule,
+  are no longer computed; the documented but unimplemented three-feature stage
+  is gone; the longest same-side run counts every trade in the minute (was the
+  first 1,000); the large-trade cut-off is the exact 95th percentile (was
+  estimated from every 100th trade).
+* `threshold-cv`, `breakeven-exit`, `signal-exit` and `feature-explore` take
+  `--next-bar-entry`; `oos-split` keeps next-bar entry by default
+  (`--same-bar-entry` reverts).
+* `signal-exit` reports take-profit exits as `tp` (was `TP`).
+* Output goes to `results/<study>/`; file names no longer carry a run date.
+
 ## 1.0.0
 
 Nine standalone research scripts restructured into one package with separate

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hlmicro"
-version = "1.0.0"
+version = "1.1.0"
 description = "Capture, parsing and validation tools for Hyperliquid market microstructure research"
 readme = "README.md"
 requires-python = ">=3.10"

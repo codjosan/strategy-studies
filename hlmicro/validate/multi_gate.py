@@ -39,6 +39,7 @@ from ..config import DEFAULT_FEES, FeeModel, default_capture_dir
 from ..parse import book_files_for_resolution, bucket_venue_means, discover, tape_per_bucket
 from ..schemas import HL_TRADES_PREFIX
 from .common import describe
+from .passive_fills import simulate_passive_fills
 
 log = logging.getLogger(__name__)
 
@@ -203,59 +204,6 @@ def simulate_vwap_exit(grid: pd.DataFrame, idx: np.ndarray, side: int, failsafe_
                      "ticks_held": int(ts[exit_] - ts[entry]), "target_hit": hit})
         busy_until = exit_
     return pd.DataFrame(rows)
-
-
-def simulate_passive_fills(grid: pd.DataFrame, idx: np.ndarray, hold_ticks: int, side: int,
-                           k_bps: float, entry_patience: int, exit_patience: int,
-                           fees: FeeModel) -> pd.DataFrame:
-    """Passive limit ``k_bps`` inside the mid at entry and exit; a limit fills
-    when the tape trades through it within the patience window. Unfilled exits
-    are taken at the mid with taker fees."""
-    if "hl_px_min" not in grid or "hl_px_max" not in grid:
-        raise ValueError("fill simulation needs the Hyperliquid trade tape")
-    mid, lo, hi, ts = (grid[c].to_numpy() for c in ("mid", "hl_px_min", "hl_px_max", "tick_ts"))
-    n = len(grid)
-    maker, taker = fees.maker_bps / 1e4, fees.taker_bps / 1e4
-    rows, busy_until = [], -1
-    counts = {"n_triggers": 0, "n_filled": 0, "n_exit_maker": 0, "n_exit_taker": 0}
-    for i in idx:
-        counts["n_triggers"] += 1
-        if i <= busy_until or not (np.isfinite(mid[i]) and mid[i] > 0):
-            continue
-        offset = k_bps * 1e-4 * mid[i]
-        post_entry = mid[i] - offset if side > 0 else mid[i] + offset
-        entry = next((k for k in range(i + 1, min(i + 1 + entry_patience, n))
-                      if (side > 0 and np.isfinite(lo[k]) and lo[k] <= post_entry)
-                      or (side < 0 and np.isfinite(hi[k]) and hi[k] >= post_entry)), None)
-        if entry is None:
-            continue
-        counts["n_filled"] += 1
-        ref = entry + hold_ticks
-        if ref >= n or not (np.isfinite(mid[ref]) and mid[ref] > 0):
-            continue
-        offset = k_bps * 1e-4 * mid[ref]
-        post_exit = mid[ref] + offset if side > 0 else mid[ref] - offset
-        exit_ = next((k for k in range(ref + 1, min(ref + 1 + exit_patience, n))
-                      if (side > 0 and np.isfinite(hi[k]) and hi[k] >= post_exit)
-                      or (side < 0 and np.isfinite(lo[k]) and lo[k] <= post_exit)), None)
-        exit_px, exit_maker = post_exit, True
-        if exit_ is None:
-            exit_ = min(ref + exit_patience, n - 1)
-            if not (np.isfinite(mid[exit_]) and mid[exit_] > 0):
-                continue
-            exit_px, exit_maker = mid[exit_], False
-            counts["n_exit_taker"] += 1
-        else:
-            counts["n_exit_maker"] += 1
-        gross = side * (exit_px - post_entry) / post_entry
-        rows.append({"entry_tick": int(ts[entry]), "exit_tick": int(ts[exit_]),
-                     "entry_px": float(post_entry), "exit_px": float(exit_px), "gross_ret": float(gross),
-                     "net_ret": float(gross - (maker + (maker if exit_maker else taker))),
-                     "exit_was_maker": exit_maker})
-        busy_until = exit_
-    frame = pd.DataFrame(rows)
-    frame.attrs.update(counts)
-    return frame
 
 
 def _score(net: np.ndarray, min_trades: int) -> dict | None:

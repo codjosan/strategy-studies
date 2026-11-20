@@ -14,6 +14,9 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from ..config import HL_VENUE
+from ..schemas import CEX_TRADE_PREFIXES, HL_TRADES_PREFIX
+from .files import discover
 from .reader import ReadStats, iter_chunks, select_symbol
 
 log = logging.getLogger(__name__)
@@ -109,3 +112,48 @@ def tape_per_bucket(files: Sequence[Path], symbol: str, bucket_ms: int, label: s
         px_min=("px_min", "min"), px_max=("px_max", "max"),
     )
     return out.rename(columns={n: f"{label}_{n}" for n in names})
+
+
+def tape_prefix(venue: str) -> str:
+    """File prefix of a venue's trade tape: ``hl`` / ``hyperliquid``, ``okx``, ``bybit``."""
+    venue = venue.lower()
+    if venue in ("hl", HL_VENUE):
+        return HL_TRADES_PREFIX
+    if venue in CEX_TRADE_PREFIXES:
+        return CEX_TRADE_PREFIXES[venue]
+    raise ValueError(f"no trade tape for venue {venue!r}")
+
+
+def cross_venue_flow(directory: Path, symbol: str, bucket_ms: int,
+                     venues: Sequence[str] = ("hl", "okx", "bybit"),
+                     start: Optional[str] = None, end: Optional[str] = None,
+                     stats: Optional[ReadStats] = None) -> pd.DataFrame:
+    """Taker-flow imbalance per bucket on each venue and across venues.
+
+    Per venue, ``tfi_<venue> = (buy - sell) / (buy + sell)`` by notional (NaN
+    in buckets without recognised trades) and ``ntl_<venue>`` the traded
+    notional. ``xv_tfi`` is the mean over venues with a value, ``n_venues``
+    their number and ``total_ntl`` the summed notional. Only buckets with at
+    least one trade on some venue are returned, sorted by ``bucket``.
+    """
+    frames = []
+    for venue in venues:
+        files = discover(directory, tape_prefix(venue), start, end)
+        tape = tape_per_bucket(files, symbol, bucket_ms, venue, stats=stats)
+        if tape.empty:
+            continue
+        buy, sell = tape[f"{venue}_buy_ntl"], tape[f"{venue}_sell_ntl"]
+        total = buy + sell
+        frames.append(pd.DataFrame({
+            "bucket": tape["bucket"].astype("int64"),
+            f"tfi_{venue}": ((buy - sell) / total.where(total > 0)).to_numpy(),
+            f"ntl_{venue}": total.to_numpy(),
+        }).set_index("bucket"))
+    if not frames:
+        return pd.DataFrame(columns=["bucket", "xv_tfi", "n_venues", "total_ntl"])
+    merged = pd.concat(frames, axis=1).sort_index()
+    tfi = merged[[c for c in merged if c.startswith("tfi_")]]
+    merged["xv_tfi"] = tfi.mean(axis=1)
+    merged["n_venues"] = tfi.notna().sum(axis=1)
+    merged["total_ntl"] = merged[[c for c in merged if c.startswith("ntl_")]].sum(axis=1)
+    return merged.reset_index().rename(columns={"index": "bucket"})
