@@ -76,39 +76,6 @@ def describe(returns: Sequence[float] | np.ndarray, ddof: int = 1) -> dict:
             "win_rate": float((x > 0).mean()), "total": float(x.sum())}
 
 
-def horizon_summary(frame: pd.DataFrame, value_col: str, horizon_col: str) -> pd.DataFrame:
-    """Per horizon: n, mean, median, p25, p75, std, Sharpe and % positive of ``value_col``."""
-    rows = []
-    for horizon, group in frame.groupby(horizon_col):
-        x = group[value_col].dropna().to_numpy()
-        if not len(x):
-            continue
-        std = x.std(ddof=1) if len(x) > 1 else np.nan
-        rows.append({horizon_col: int(horizon), "n": len(x), "mean": x.mean(), "median": np.median(x),
-                     "p25": np.percentile(x, 25), "p75": np.percentile(x, 75), "std": std,
-                     "sharpe": x.mean() / std if std and std > 0 else np.nan,
-                     "pct_pos": (x > 0).mean() * 100})
-    return pd.DataFrame(rows, columns=[horizon_col, "n", "mean", "median", "p25", "p75", "std",
-                                       "sharpe", "pct_pos"])
-
-
-def horizon_halves(frame: pd.DataFrame, value_col: str, horizon_col: str, min_n: int,
-                   time_col: str = "ts_ms") -> pd.DataFrame:
-    """Per horizon with at least ``min_n`` values: median of the first and
-    second chronological half and whether both are positive."""
-    rows = []
-    for horizon, group in frame.groupby(horizon_col):
-        x = group.sort_values(time_col, kind="stable")[value_col].dropna().to_numpy()
-        if len(x) < min_n:
-            continue
-        cut = len(x) // 2
-        m1, m2 = float(np.median(x[:cut])), float(np.median(x[cut:]))
-        rows.append({horizon_col: int(horizon), "n_first": cut, "n_second": len(x) - cut,
-                     "median_first": m1, "median_second": m2, "positive_both": m1 > 0 and m2 > 0})
-    return pd.DataFrame(rows, columns=[horizon_col, "n_first", "n_second", "median_first",
-                                       "median_second", "positive_both"])
-
-
 def fmt_signed(value: float, digits: int = 2, width: int = 0) -> str:
     """``+1.23`` style; ``na`` for NaN."""
     if value is None or (isinstance(value, float) and np.isnan(value)):

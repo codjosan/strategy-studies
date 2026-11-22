@@ -5,7 +5,9 @@ with the same quantity from 5-second polling: correlation, and agreement of
 threshold crossings of their 60-minute z-scores.
 
 Part B - features. For each trade in a per-trade CSV (``tp_trades_<symbol>.csv``
-from ``tp-multifold``), four features of the entry minute are tested against
+from ``tp-multifold``), four features of the signal minute (the last minute
+known when the trade was decided; the entry minute for older files without
+``signal_ts_ms``) are tested against
 the trade's net return (Spearman rank correlation, Bonferroni-adjusted):
 
 * ``obi_intra_std``    mean across venues of the within-minute std of imbalance
@@ -44,7 +46,7 @@ FEATURES = {
     "obi_intra_std": "within-minute std of imbalance (mean over venues)",
     "obi_range": "within-minute range of imbalance (mean over venues)",
     "obi_drift_signed": "within-minute imbalance drift, signed by trade side",
-    "n_updates": "book updates in the entry minute",
+    "n_updates": "book updates in the signal minute",
 }
 RETURN_COLUMNS = ("pnl_pct_net", "return_pct", "ret_net_pct", "pnl_pct", "ret_gross_pct")
 
@@ -79,8 +81,9 @@ def parse_filter(text: str) -> dict:
 def load_trades(path: Path, symbol: str, trade_filter: dict) -> tuple[pd.DataFrame, str]:
     trades = pd.read_csv(path)
     for key, value in trade_filter.items():
-        if key in trades:
-            trades = trades[trades[key] == value]
+        if key not in trades:
+            raise KeyError(f"filter column {key!r} not in {path} (columns: {', '.join(trades.columns)})")
+        trades = trades[trades[key] == value]
     if "symbol" in trades:
         trades = trades[trades["symbol"].astype(str).str.upper() == symbol.upper()]
     return_col = next((c for c in RETURN_COLUMNS if c in trades), None)
@@ -160,12 +163,14 @@ def run(cfg: Config) -> Result:
     trades, return_col = load_trades(cfg.trades_csv, cfg.symbol, cfg.trade_filter)
     if len(trades) < cfg.min_trades:
         raise ValueError(f"only {len(trades)} trades after filtering (need {cfg.min_trades})")
-    trades["ts_min"] = (trades["entry_ts_ms"] // 60_000) * 60_000
+    # Features of the minute the decision was made on, not the entry minute after it.
+    when = "signal_ts_ms" if "signal_ts_ms" in trades else "entry_ts_ms"
+    trades["ts_min"] = (trades[when] // 60_000) * 60_000
     joined = trades.merge(ws, on="ts_min", how="left")
     side = np.where(joined["side"].astype(str).str.upper() == "LONG", 1.0, -1.0)
     joined["obi_drift_signed"] = joined["obi_drift"] * side
-    if np.nanmax(np.abs(joined[return_col].astype(float))) > 0.2:   # percent -> fraction
-        joined[return_col] = joined[return_col] / 100.0
+    # Every accepted return column is in percent (see RETURN_COLUMNS); work in fractions.
+    joined[return_col] = joined[return_col].astype(float) / 100.0
     features, tested = univariate(joined, return_col, cfg.min_trades)
     keep = ["ts_min", "side", return_col, *FEATURES]
     return Result(config=cfg, n_trades=len(trades), n_joined=int(joined["n_updates"].notna().sum()),

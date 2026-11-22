@@ -31,13 +31,15 @@ def extract_day(day: str, tf: Path | None, lf: Path | None, symbols: list[str],
             sec = ((ch["ts_ms"].to_numpy(dtype="int64") - d0) // 1000)
             ok = (sec >= 0) & (sec < DAY_S)
             ch = ch[ok].assign(sec=sec[ok], ntl=(ch["px"] * ch["sz"])[ok])
-            n_lq += len(ch)
+            n_lq += int(ch["side"].astype(str).str.strip().str.upper().isin(["A", "B"]).sum())
             for c, g in ch.groupby("coin", sort=False):
                 s = g["sec"].to_numpy()
                 w = g["ntl"].to_numpy()
-                is_sell = (g["side"].to_numpy() == "A")
+                side = g["side"].astype(str).str.strip().str.upper().to_numpy()
+                is_sell = side == "A"      # liquidated long, forced sell
+                is_buy = side == "B"       # liquidated short, forced buy
                 lsell[c] += np.bincount(s[is_sell], weights=w[is_sell], minlength=DAY_S)
-                lbuy[c] += np.bincount(s[~is_sell], weights=w[~is_sell], minlength=DAY_S)
+                lbuy[c] += np.bincount(s[is_buy], weights=w[is_buy], minlength=DAY_S)
 
     arrays = {}
     for c in symbols:

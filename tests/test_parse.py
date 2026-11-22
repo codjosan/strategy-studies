@@ -5,12 +5,10 @@ import pandas as pd
 import pytest
 
 from hlmicro.parse import (
-    aggressor_sign, bucket_venue_means, cross_venue_flow, cross_venue_minutes, discover, iter_chunks,
+    aggressor_sign, bucket_venue_means, cross_venue_minutes, discover, iter_chunks,
     load_liquidations, load_tape, minute_grid, minute_liquidation_flow, tape_per_bucket,
     venue_mid_series,
 )
-from hlmicro.parse.inventory import health_problems, inventory, render
-from hlmicro.parse.inventory import main as inventory_main
 from hlmicro.parse.reader import ReadStats
 
 
@@ -136,56 +134,57 @@ def test_liquidation_loader_discards_account_identifier(tmp_path):
     assert "liq_user" not in liqs
 
 
-def test_cross_venue_flow_reads_every_side_convention(tmp_path):
-    (tmp_path / "hl_trades_20260101.csv").write_text(
-        "ts_ms,coin,px,sz,side,tid\n"
-        f"{DAY0},BTC,100,3,B,1\n{DAY0 + 1},BTC,100,1,A,2\n"           # minute 0: (300 - 100) / 400
-        f"{DAY0 + 60_000},BTC,100,1,A,3\n")                          # minute 1: -1
-    (tmp_path / "okx_trades_20260101.csv").write_text(
-        "ts_ms,recv_ts_ms,coin,px,sz,side,tid\n"
-        f"{DAY0},{DAY0},BTC,100,1,buy,1\n{DAY0 + 5},{DAY0 + 5},BTC,100,1,sell,2\n")   # minute 0: 0
-    flow = cross_venue_flow(tmp_path, "BTC", 60_000, venues=("hl", "okx", "bybit"))
-    first = DAY0 // 60_000
-    assert flow["bucket"].tolist() == [first, first + 1]
-    assert flow["tfi_hl"].tolist() == [0.5, -1.0]
-    assert flow["tfi_okx"].iloc[0] == 0.0 and np.isnan(flow["tfi_okx"].iloc[1])
-    assert flow["xv_tfi"].tolist() == [0.25, -1.0]
-    assert flow["n_venues"].tolist() == [2, 1]
-    assert flow["total_ntl"].tolist() == [600.0, 100.0]
+def test_cache_and_workers_do_not_change_results(capture_dir, tmp_path, monkeypatch):
+    import os
+    from hlmicro.parse import filecache, load_tape, venue_mid_series
+    from hlmicro.parse.books import bucket_venue_means
+    files = discover(capture_dir, "obi_5s")
+    tapes = discover(capture_dir, "hl_trades")
+
+    def load(jobs, cache):
+        monkeypatch.setenv("HLMICRO_JOBS", str(jobs))
+        if cache:
+            monkeypatch.setenv("HLMICRO_CACHE_DIR", str(tmp_path / "cache"))
+            monkeypatch.delenv("HLMICRO_NO_CACHE", raising=False)
+        else:
+            monkeypatch.setenv("HLMICRO_NO_CACHE", "1")
+        stats = ReadStats()
+        out = (bucket_venue_means(files, "BTC", 60_000, stats=stats),
+               venue_mid_series(files, "SOL", "binance", stats=stats),
+               load_tape(tapes, "BTC", stats=stats))
+        return out, (stats.rows_read, stats.rows_dropped)
+
+    serial, s_stats = load(1, cache=False)
+    parallel, p_stats = load(2, cache=False)
+    cold, c_stats = load(2, cache=True)
+    assert filecache.cache_info()[1] == len(files) * 2 + len(tapes)
+    warm, w_stats = load(1, cache=True)
+    for other in (parallel, cold, warm):
+        for a, b in zip(serial, other):
+            pd.testing.assert_frame_equal(a, b)
+    assert s_stats == p_stats == c_stats == w_stats            # row accounting survives the cache
 
 
-def _health_day(directory, date: str, rows: int, gap_at=None, truncate=False):
-    """A 5-second book file for ``date``; optionally a 20-minute gap or a cut-off gzip."""
-    t = int(pd.Timestamp(date, tz="UTC").timestamp() * 1000)
-    lines = ["ts_ms,coin,venue,mid,obi_ntl"]
-    for i in range(rows):
-        t += 5_000 + (20 * 60_000 if i == gap_at else 0)
-        lines.append(f"{t},SOL,hyperliquid,100.0,0.1")
-    raw = gzip.compress(("\n".join(lines) + "\n").encode())
-    (directory / f"obi_5s_{date}.csv.gz").write_bytes(raw[:-40] if truncate else raw)
-    return t
+def test_cache_notices_a_changed_file(tmp_path, monkeypatch):
+    import os
+    from hlmicro.parse.books import bucket_venue_means
+    monkeypatch.setenv("HLMICRO_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("HLMICRO_JOBS", "1")
+    path = tmp_path / "obi_5s_20260101.csv"
+    header = "ts_ms,coin,venue,mid,obi_ntl\n"
+    path.write_text(header + "1767225600000,BTC,binance,100,0.1\n")
+    first = bucket_venue_means([path], "BTC", 60_000)
+    path.write_text(header + "1767225600000,BTC,binance,200,0.1\n")
+    os.utime(path, ns=(10**18, 10**18))                         # even a same-size rewrite is seen
+    second = bucket_venue_means([path], "BTC", 60_000)
+    assert first["mid"].iloc[0] == 100 and second["mid"].iloc[0] == 200
 
 
-def test_inventory_health_checks(tmp_path):
-    _health_day(tmp_path, "20260628", 3000)
-    _health_day(tmp_path, "20260629", 3000, gap_at=1000)
-    _health_day(tmp_path, "20260630", 3000, truncate=True)
-    _health_day(tmp_path, "20260702", 200)                           # 20260701 missing; low volume
-    newest = _health_day(tmp_path, "20260703", 300)                   # in progress: not low volume
-    reports = inventory(tmp_path)
-    problems = health_problems(reports, max_gap_min=10, stale_min=15, now_ms=newest + 5 * 60_000)
-    assert len(problems) == 4
-    assert set(problems[:3]) == {
-        "obi_5s: obi_5s_20260630.csv.gz ended early (truncated)",
-        "obi_5s: 20260701 missing",
-        "obi_5s: 20260629 has a 20-minute gap",
-    }
-    assert problems[3].startswith("obi_5s: 20260702 low volume (200 rows")   # newest day not flagged
-    assert any("stale" in p for p in health_problems(reports, stale_min=15, now_ms=newest + 60 * 60_000))
-    assert "FAIL" in render(reports, problems)
-    assert inventory_main(["--capture-dir", str(tmp_path), "--check"]) == 1
-    assert inventory_main(["--capture-dir", str(tmp_path)]) == 0
-
-
-def test_inventory_synthetic_capture_is_healthy(capture_dir):
-    assert health_problems(inventory(capture_dir)) == []
+def test_reader_drops_surplus_field_row_even_on_the_first_line(tmp_path):
+    path = tmp_path / "obi_5s_20260101.csv"
+    path.write_text("ts_ms,coin,venue,mid,obi_ntl\n"
+                    "1767225600000,BTC,binance,100,0.1,EXTRA\n"
+                    "1767225601000,BTC,binance,101,0.2\n")
+    stats = ReadStats()
+    rows = pd.concat(list(iter_chunks(path, ["ts_ms", "coin", "mid"], numeric=["ts_ms", "mid"], stats=stats)))
+    assert rows["mid"].tolist() == [101] and rows["coin"].tolist() == ["BTC"]

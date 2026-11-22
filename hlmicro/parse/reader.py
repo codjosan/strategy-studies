@@ -10,6 +10,7 @@ import zlib
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 log = logging.getLogger(__name__)
@@ -140,12 +141,15 @@ def iter_chunks(path: str | Path, columns: Sequence[str], *,
                        if c in selected]
     present_required = [c for c in required if c in selected]
 
+    skip = [1] if _first_row_has_surplus_fields(path, len(header)) else None
     raw = _CompleteLinesReader(path)
     try:
         # Whole rows are parsed (no usecols) because pandas only rejects rows
-        # with surplus fields when it parses every column.
+        # with surplus fields when it parses every column. The first data row is
+        # the exception: pandas would take its extra field as an index column and
+        # shift every row, so it is checked separately and skipped.
         reader = pd.read_csv(io.BufferedReader(raw, buffer_size=_BLOCK), dtype=dtype,
-                             chunksize=chunksize, on_bad_lines="skip")
+                             chunksize=chunksize, on_bad_lines="skip", skiprows=skip)
         chunks = iter(reader)
         while True:
             try:
@@ -160,20 +164,7 @@ def iter_chunks(path: str | Path, columns: Sequence[str], *,
                 if stats is not None:
                     stats.files_truncated.append(path.name)
                 break
-            n_raw = len(chunk)
-            chunk = chunk[selected]
-            for col in present_numeric:
-                if not pd.api.types.is_numeric_dtype(chunk[col]):
-                    chunk[col] = pd.to_numeric(chunk[col], errors="coerce")
-            if present_required:
-                chunk = chunk.dropna(subset=present_required)
-            if ts_range is not None:
-                ts = chunk["ts_ms"]
-                chunk = chunk[(ts >= ts_range[0]) & (ts < ts_range[1])]
-            if stats is not None:
-                stats.rows_read += n_raw
-                stats.rows_dropped += n_raw - len(chunk)
-            yield chunk
+            yield _clean(chunk[selected], present_numeric, present_required, ts_range, stats)
     finally:
         if raw.truncated:
             log.warning("%s: compressed stream is truncated; rows up to the break were kept", path.name)
@@ -182,9 +173,40 @@ def iter_chunks(path: str | Path, columns: Sequence[str], *,
         raw.close()
 
 
+def _first_row_has_surplus_fields(path: Path, n_fields: int) -> bool:
+    with _CompleteLinesReader(path) as raw:
+        stream = io.BufferedReader(raw)
+        stream.readline()
+        first = stream.readline()
+    return first.count(b",") > n_fields - 1
+
+
+def _clean(chunk: pd.DataFrame, numeric: list[str], required: list[str],
+           ts_range: Optional[tuple[int, int]], stats: Optional[ReadStats]) -> pd.DataFrame:
+    n_raw = len(chunk)
+    for col in numeric:
+        if not pd.api.types.is_numeric_dtype(chunk[col]):
+            chunk[col] = pd.to_numeric(chunk[col], errors="coerce")
+    if required:
+        chunk = chunk.dropna(subset=required)
+    if ts_range is not None:
+        ts = chunk["ts_ms"]
+        chunk = chunk[(ts >= ts_range[0]) & (ts < ts_range[1])]
+    if stats is not None:
+        stats.rows_read += n_raw
+        stats.rows_dropped += n_raw - len(chunk)
+    return chunk
+
+
 def select_symbol(chunk: pd.DataFrame, symbol: str, venue: Optional[str] = None) -> pd.DataFrame:
     """Rows for ``symbol`` (case-insensitive), optionally one venue."""
-    mask = chunk["coin"].astype(str).str.upper() == symbol.upper()
+    mask = _matches(chunk["coin"], symbol.upper(), str.upper)
     if venue is not None:
-        mask &= chunk["venue"].astype(str).str.lower() == venue.lower()
+        mask &= _matches(chunk["venue"], venue.lower(), str.lower)
     return chunk.loc[mask]
+
+
+def _matches(column: pd.Series, wanted: str, norm) -> np.ndarray:
+    """``norm(str(value)) == wanted``, evaluated once per distinct value."""
+    hits = [v for v in column.unique() if norm(str(v)) == wanted]
+    return column.isin(hits).to_numpy()

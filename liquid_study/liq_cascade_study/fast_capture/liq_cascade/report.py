@@ -34,7 +34,7 @@ def print_verdict(sdf: pd.DataFrame, cost: float, n_tested: int) -> None:
         ok = ok[ok["folds_pos"].map(lambda s: int(s.split("/")[0]) / max(1, int(s.split("/")[1]))) >= 0.75]
     if ok.empty:
         print(f"  None of the {n_tested} (setting, coin, direction, horizon) cells has a "
-              f"day-bootstrap CI above 0 net of {cost:.1f} bps with ≥75% of folds positive.")
+              f"day-bootstrap CI above 0 net of {cost:.2f} bps with ≥75% of folds positive.")
         print("  → Liquidation cascades do not pay for taker execution at this latency.")
     else:
         print(f"  {len(ok)} of {n_tested} cells pass (CI > 0 net, ≥75% folds positive, n ≥ 30):")

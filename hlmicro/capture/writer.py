@@ -53,6 +53,8 @@ class DailyCSVWriter:
             if self._fh is not None:
                 self._fh.close()
                 self._fh = None
+                self._csv = None
+                self._date = None     # a later write reopens the file instead of failing
 
     def _roll(self) -> None:
         today = self._clock()
@@ -64,13 +66,24 @@ class DailyCSVWriter:
         if self.gzip_closed and previous is not None:
             compress(self.path_for(previous))
         path = self.path_for(today)
-        is_new = not path.exists()
+        is_new = not path.exists() or path.stat().st_size == 0
         self.directory.mkdir(parents=True, exist_ok=True)
+        needs_newline = not is_new and not _ends_with_newline(path)
         self._fh = open(path, "a", newline="", buffering=1)
+        if needs_newline:
+            # The previous run stopped mid-row. Finish that line so the next row
+            # starts on its own line; the fragment is dropped by the reader.
+            self._fh.write("\n")
         self._csv = csv.writer(self._fh)
         if is_new:
             self._csv.writerow(self.header)
         self._date = today
+
+
+def _ends_with_newline(path: Path) -> bool:
+    with open(path, "rb") as fh:
+        fh.seek(-1, os.SEEK_END)
+        return fh.read(1) == b"\n"
 
 
 def compress(path: Path) -> Path | None:

@@ -28,8 +28,8 @@ def main() -> None:
                    help="burst threshold: quantile of the coin's trailing non-zero windows")
     p.add_argument("--horizons-min", default="1,5,15,30,60")
     p.add_argument("--latency-s", type=int, default=2)
-    p.add_argument("--fee-bps-rt", type=float, default=9.0,
-                   help="taker fee round trip (HL base 0.045%% × 2)")
+    p.add_argument("--fee-bps-rt", type=float, default=8.64,
+                   help="taker fee round trip (4.32 bps × 2, same as hlmicro FeeModel)")
     p.add_argument("--slip-bps-rt", type=float, default=2.0,
                    help="extra slippage round trip (spreads widen in cascades)")
     p.add_argument("--lookback-days", type=int, default=30)
@@ -66,7 +66,7 @@ def main() -> None:
           f"liquidation files from {min(lfiles) if lfiles else 'n/a'}")
     print(f"  Windows: {windows}s   thresholds (trailing {args.lookback_days}d quantile): {qs}")
     print(f"  Horizons: {[h // 60 for h in horizons_s]} min   latency: {args.latency_s}s   "
-          f"cost: {args.fee_bps_rt:.1f} fee + {args.slip_bps_rt:.1f} slip = {cost:.1f} bps RT")
+          f"cost: {args.fee_bps_rt:.2f} fee + {args.slip_bps_rt:.2f} slip = {cost:.2f} bps RT")
     print()
 
     todo = [d for d in days if args.redo or d == today or not (cache / f"sec_{d}.npz").exists()]
@@ -109,7 +109,7 @@ def main() -> None:
 
     print()
     print("=" * 118)
-    print(f"NET RETURN PER EVENT, bps, after {cost:.1f} bps round trip")
+    print(f"NET RETURN PER EVENT, bps, after {cost:.2f} bps round trip")
     print("=" * 118)
 
     summary = []

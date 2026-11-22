@@ -160,7 +160,9 @@ def run(symbols: list[str], venues: list[str], interval_s: float, out_dir: Path,
                 log.info("ticks=%d  %s", n_ticks, sampler.status())
                 last_status = now
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        # Cancel queued samples but let in-flight ones (bounded by HTTP_TIMEOUT_S)
+        # finish, so none of them writes to a closed file.
+        pool.shutdown(wait=True, cancel_futures=True)
         writer.close()
 
 

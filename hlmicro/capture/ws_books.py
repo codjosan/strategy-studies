@@ -84,10 +84,16 @@ class BookStream(threading.Thread):
 
         backoff = 2.0
         while not self.stop_event.is_set():
+            opened = threading.Event()
+
+            def on_open(ws) -> None:
+                opened.set()
+                self.subscribe(ws)
+
             try:
                 self._ws = websocket.WebSocketApp(
                     self.url,
-                    on_open=lambda ws: self.subscribe(ws),
+                    on_open=on_open,
                     on_message=self._on_message,
                     on_error=lambda ws, err: log.warning("%s: %s", self.venue, err),
                     on_close=lambda ws, code, msg: log.info("%s closed (%s)", self.venue, code),
@@ -97,6 +103,10 @@ class BookStream(threading.Thread):
                 log.warning("%s: connection error: %s", self.venue, exc)
             if self.stop_event.is_set():
                 break
+            if opened.is_set():
+                # The connection worked and later dropped: reconnect quickly
+                # instead of carrying the backoff from earlier failures.
+                backoff = 2.0
             delay = min(MAX_BACKOFF_S, backoff)
             log.info("%s: reconnecting in %.0fs", self.venue, delay)
             self.stop_event.wait(delay)

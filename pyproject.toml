@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hlmicro"
-version = "1.1.0"
+version = "1.0.0"
 description = "Capture, parsing and validation tools for Hyperliquid market microstructure research"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 capture = ["websocket-client>=1.6"]
 plot = ["matplotlib>=3.7"]
+stats = ["statsmodels>=0.14"]
 dev = ["pytest>=7"]
 
 [project.scripts]

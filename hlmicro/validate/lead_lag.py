@@ -13,7 +13,10 @@ Gate (per venue, threshold and side): capturable at the target lag is at
 least the round-trip taker cost, n >= ``min_events``, and both chronological
 halves have the same sign.
 
-The Hyperliquid mid comes from websocket book updates (``obi_ws``).
+The Hyperliquid mid comes from websocket book updates (``obi_ws``). A mid older
+than ``max_quote_age_ms`` counts as missing, so a gap in the websocket
+recording (disconnect, collector restart) cannot pass as a stable price, and
+no residual is measured against a stale one.
 
 Usage::
 
@@ -62,6 +65,7 @@ class Config:
     stability_bps: float = 0.5
     min_events: int = 30
     min_events_to_report: int = 5
+    max_quote_age_ms: int | None = 5_000     # None = no limit
     fees: FeeModel = DEFAULT_FEES
 
     @property
@@ -177,7 +181,7 @@ def run(cfg: Config) -> Result:
         raise ValueError(f"no Hyperliquid websocket mids for {cfg.symbol}")
     if all(t.empty for t in tapes.values()):
         raise ValueError(f"no CEX trades for {cfg.symbol}")
-    hl = StepLookup(hl_mid["ts_ms"].to_numpy(), hl_mid["mid"].to_numpy())
+    hl = StepLookup(hl_mid["ts_ms"].to_numpy(), hl_mid["mid"].to_numpy(), cfg.max_quote_age_ms)
 
     clock = {}
     for venue, tape in tapes.items():
@@ -220,6 +224,7 @@ def render(result: Result) -> str:
            f"  capture: {cfg.capture_dir}   window: {window}",
            f"  cost: 2 x ({cfg.fees.taker_bps:.2f} taker + {cfg.fees.half_spread_bps:.2f} half-spread) "
            f"= {cost:.2f} bps round trip",
+           f"  HL mid max age: {f'{cfg.max_quote_age_ms} ms' if cfg.max_quote_age_ms else 'no limit'}",
            "  trades: " + "  ".join(f"{k} {v:,}" for k, v in result.n_trades.items())
            + f"   HL mid updates: {result.hl_rows:,} ({result.hl_hours:.1f}h)", "",
            "  clock: receive time minus exchange time (ms)"]
@@ -313,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="notional thresholds in USD (default: per-symbol table)")
     parser.add_argument("--taker-bps", type=float, default=d.fees.taker_bps)
     parser.add_argument("--half-spread-bps", type=float, default=d.fees.half_spread_bps)
+    parser.add_argument("--max-quote-age-ms", type=int, default=d.max_quote_age_ms,
+                        help="treat a Hyperliquid mid older than this as missing; 0 = no limit")
     parser.add_argument("--plot-out", type=Path, default=None, help="save a PNG of the response curves")
     add_date_args(parser)
     add_common_args(parser)
@@ -320,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.verbose)
     cfg = Config(capture_dir=args.capture_dir, symbol=args.symbol, days=args.days,
                  start=args.start, end=args.end, thresholds=args.thresholds,
+                 max_quote_age_ms=args.max_quote_age_ms or None,
                  fees=FeeModel(taker_bps=args.taker_bps, half_spread_bps=args.half_spread_bps))
     result = run(cfg)
     print(render(result))

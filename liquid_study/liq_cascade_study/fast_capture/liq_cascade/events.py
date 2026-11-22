@@ -54,7 +54,7 @@ def find_events(coin: str, days_all: list[str], px: np.ndarray, ls: np.ndarray,
         thr = np.full(D, np.inf)
         for i in range(D):
             prev = [p for p in day_nonzero[max(0, i - lookback_days):i] if len(p)]
-            if len(prev) < warmup_days:
+            if not prev or len(prev) < warmup_days:
                 continue
             pool = np.concatenate(prev)
             if len(pool) >= 100:

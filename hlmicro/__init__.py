@@ -12,4 +12,4 @@ The package is organised as a three-stage pipeline:
     pass/fail criteria.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.0.0"

@@ -8,7 +8,9 @@ For each settlement hour T with price coverage, returns (in %) are measured
 over four windows: early T-15m..T-5m, final T-5m..T, post T..T+5m and late
 T+5m..T+15m, then grouped by funding-rate quantile. A simple rule is
 backtested: short at T-5m when funding is in the top ``p``%, long when in the
-bottom ``p``%, exit at T+5m.
+bottom ``p``%, exit at T+5m. The position is open at settlement T, so it
+collects (or pays) that hour's funding: longs pay ``rate`` and shorts receive
+it, as a fraction of notional.
 
 Prices are the mid of one venue from 5-second book snapshots. Funding comes
 from a CSV (``--funding-csv``, default ``hl_funding_<COIN>.csv`` in the
@@ -123,8 +125,12 @@ def backtest(events: list[dict], pct: float, fee_bps: float, capital: float) -> 
             direction = 1
         else:
             continue
-        gross = direction * (e["final_ret"] + e["post_ret"])
-        trades.append({"gross": gross, "net": gross - round_trip_pct})
+        held = ((1 + e["final_ret"] / 100) * (1 + e["post_ret"] / 100) - 1) * 100   # T-5m .. T+5m
+        price = direction * held
+        funding = -direction * e["funding_rate"] * 100       # % of notional, settled at T
+        gross = price + funding
+        trades.append({"hour_ms": e["hour_ms"], "price": price, "funding": funding, "gross": gross,
+                       "net": gross - round_trip_pct})
     if not trades:
         return None
     net = [t["net"] for t in trades]
@@ -133,9 +139,11 @@ def backtest(events: list[dict], pct: float, fee_bps: float, capital: float) -> 
     s = mean_sem_t(net)
     return {"pct": pct, "high": high, "low": low, "fee_bps": fee_bps, "n": len(trades),
             "win_rate": sum(1 for x in net if x > 0) / len(net) * 100,
+            "price_total": sum(t["price"] for t in trades),
+            "funding_total": sum(t["funding"] for t in trades),
             "gross_total": sum(t["gross"] for t in trades), "net_total": total_net,
             "pnl_usd": total_net / 100 * capital, "apr_pct": total_net / span_h * 24 * 365,
-            "mean": s["mean"], "sem": s["sem"], "t": s["t"]}
+            "mean": s["mean"], "sem": s["sem"], "t": s["t"], "trades": trades}
 
 
 @dataclass
@@ -202,11 +210,13 @@ def render(result: Result) -> str:
         out += ["", "  Direction check (|t| > 1 in the predicted direction):"]
         out += [f"    {'yes' if ok else 'no ':<4}{label}" for label, ok in checks]
 
-    out += ["", rule(80, "="), "  Backtest: short top p%, long bottom p%, T-5m to T+5m", rule(80, "=")]
+    out += ["", rule(80, "="), "  Backtest: short top p%, long bottom p%, T-5m to T+5m (gross = price + funding)",
+            rule(80, "=")]
     for r in result.backtests:
         out += [f"  fee {r['fee_bps']:.2f} bps/side, p={r['pct']:.0f}%  "
                 f"(funding >= {r['high'] * 100:+.4f}% or <= {r['low'] * 100:+.4f}%)",
-                f"    n={r['n']}  win={r['win_rate']:.1f}%  gross={r['gross_total']:+.3f}%  "
+                f"    n={r['n']}  win={r['win_rate']:.1f}%  price={r['price_total']:+.3f}%  "
+                f"funding={r['funding_total']:+.3f}%  gross={r['gross_total']:+.3f}%  "
                 f"net={r['net_total']:+.3f}%  mean={r['mean']:+.4f}%  SEM={r['sem']:.4f}%  "
                 f"t={r['t']:+.2f}  annualised={r['apr_pct']:+.2f}%"]
     return "\n".join(out)

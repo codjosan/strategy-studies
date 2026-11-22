@@ -7,7 +7,9 @@ Hyperliquid mid from the 5-second data, and only minutes present in both
 sources are used, so any difference is attributable to the sampling alone.
 
 Entries are taken one minute after the signal (no look-ahead); exits on stop,
-take-profit or timeout, followed by a cooldown.
+take-profit or timeout, followed by a cooldown. A take-profit is a resting
+limit and fills at its level; a stop fills at the observed minute price, which
+can be beyond the stop level when the price moved through it.
 
 Usage::
 
@@ -90,7 +92,7 @@ def backtest(minutes: np.ndarray, obi: np.ndarray, prices: np.ndarray, cfg: Conf
                 exit_ret = tp
                 break
             if ret <= stop:
-                exit_ret = stop
+                exit_ret = ret        # the price actually seen, not the stop level
                 break
         if exit_ret is None:
             px = prices[entry + last]
@@ -110,7 +112,8 @@ def summarize(trades: list[dict], n_folds: int, start_ms: int, end_ms: int) -> d
     edges = np.linspace(start_ms, end_ms, n_folds + 1)
     fold_means = []
     for k in range(n_folds):
-        part = frame[(frame["entry_min"] >= edges[k]) & (frame["entry_min"] < edges[k + 1])]
+        upper = (frame["entry_min"] <= edges[k + 1]) if k == n_folds - 1 else (frame["entry_min"] < edges[k + 1])
+        part = frame[(frame["entry_min"] >= edges[k]) & upper]
         fold_means.append(part["ret_net"].mean() if len(part) else np.nan)
     s["fold_means"] = fold_means
     s["folds_positive"] = sum(1 for m in fold_means if not np.isnan(m) and m > 0)

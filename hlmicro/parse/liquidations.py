@@ -11,10 +11,24 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from .filecache import map_files
 from .reader import ReadStats, iter_chunks, select_symbol
 from .trades import aggressor_sign
 
 COLUMNS = ["ts_ms", "coin", "px", "sz", "side", "sign", "notional", "tid"]
+
+
+def _liq_part(path: Path, symbol: Optional[str]):
+    stats = ReadStats()
+    parts = []
+    for chunk in iter_chunks(path, ["ts_ms", "coin", "px", "sz", "side", "tid"],
+                             numeric=["ts_ms", "px", "sz"],
+                             required=["ts_ms", "coin", "px", "sz", "side"],
+                             stats=stats):
+        rows = select_symbol(chunk, symbol) if symbol else chunk
+        if not rows.empty:
+            parts.append(rows)
+    return (pd.concat(parts, ignore_index=True) if parts else None), stats
 
 
 def load_liquidations(files: Sequence[Path], symbol: Optional[str] = None,
@@ -24,15 +38,7 @@ def load_liquidations(files: Sequence[Path], symbol: Optional[str] = None,
     ``sign`` is -1 for forced sells (``A``) and +1 for forced buys (``B``);
     ``notional`` is ``px * sz`` in USD. Account identifiers are not loaded.
     """
-    parts = []
-    for path in files:
-        for chunk in iter_chunks(path, ["ts_ms", "coin", "px", "sz", "side", "tid"],
-                                 numeric=["ts_ms", "px", "sz"],
-                                 required=["ts_ms", "coin", "px", "sz", "side"],
-                                 stats=stats):
-            rows = select_symbol(chunk, symbol) if symbol else chunk
-            if not rows.empty:
-                parts.append(rows)
+    parts = [p for p in map_files(_liq_part, files, {"symbol": symbol}, None, stats) if p is not None]
     if not parts:
         return pd.DataFrame(columns=COLUMNS)
     out = pd.concat(parts, ignore_index=True)

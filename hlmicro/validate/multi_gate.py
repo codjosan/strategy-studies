@@ -34,12 +34,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..cli import add_common_args, add_date_args, setup_logging
+from ..cli import add_common_args, add_date_args, csv_list, setup_logging
 from ..config import DEFAULT_FEES, FeeModel, default_capture_dir
 from ..parse import book_files_for_resolution, bucket_venue_means, discover, tape_per_bucket
 from ..schemas import HL_TRADES_PREFIX
 from .common import describe
-from .passive_fills import simulate_passive_fills
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +92,16 @@ class Config:
                 "maker": self.fees.maker_round_trip_bps / 1e4, "zero": 0.0}
 
 
+def _wide(book: pd.DataFrame, value: str) -> pd.DataFrame:
+    """``book.pivot(index="bucket", columns="venue", values=value)``, done with numpy
+    (several times faster on millions of tick rows; same index, columns and values)."""
+    b_idx, buckets = pd.factorize(book["bucket"].to_numpy(np.int64), sort=True)
+    v_idx, venues = pd.factorize(book["venue"].astype(str).to_numpy(), sort=True)
+    wide = np.full((len(buckets), len(venues)), np.nan)
+    wide[b_idx, v_idx] = book[value].to_numpy(np.float64)
+    return pd.DataFrame(wide, index=pd.Index(buckets, name="bucket"), columns=pd.Index(venues, name="venue"))
+
+
 def build_features(cfg: Config) -> pd.DataFrame:
     """Continuous tick grid with per-venue imbalance, HL mid, and HL flow features."""
     bucket_ms = cfg.tick_s * 1000
@@ -104,8 +113,8 @@ def build_features(cfg: Config) -> pd.DataFrame:
         return pd.DataFrame()
     tape = tape_per_bucket(tape_files, cfg.symbol, bucket_ms, "hl")
 
-    obi = book.pivot(index="bucket", columns="venue", values="obi_ntl").astype("float32")
-    mid = book.pivot(index="bucket", columns="venue", values="mid").astype("float32")
+    obi = _wide(book, "obi_ntl").astype("float32")
+    mid = _wide(book, "mid").astype("float32")
     grid = pd.DataFrame(index=obi.index)
     for venue in obi.columns:
         grid[f"obi_{venue}"] = obi[venue]
@@ -206,6 +215,59 @@ def simulate_vwap_exit(grid: pd.DataFrame, idx: np.ndarray, side: int, failsafe_
     return pd.DataFrame(rows)
 
 
+def simulate_passive_fills(grid: pd.DataFrame, idx: np.ndarray, hold_ticks: int, side: int,
+                           k_bps: float, entry_patience: int, exit_patience: int,
+                           fees: FeeModel) -> pd.DataFrame:
+    """Passive limit ``k_bps`` inside the mid at entry and exit; a limit fills
+    when the tape trades through it within the patience window. Unfilled exits
+    are taken at the mid with taker fees."""
+    if "hl_px_min" not in grid or "hl_px_max" not in grid:
+        raise ValueError("fill simulation needs the Hyperliquid trade tape")
+    mid, lo, hi, ts = (grid[c].to_numpy() for c in ("mid", "hl_px_min", "hl_px_max", "tick_ts"))
+    n = len(grid)
+    maker, taker = fees.maker_bps / 1e4, fees.taker_bps / 1e4
+    rows, busy_until = [], -1
+    counts = {"n_triggers": 0, "n_filled": 0, "n_exit_maker": 0, "n_exit_taker": 0}
+    for i in idx:
+        if i <= busy_until or not (np.isfinite(mid[i]) and mid[i] > 0):
+            continue
+        counts["n_triggers"] += 1     # triggers where an order was actually posted
+        offset = k_bps * 1e-4 * mid[i]
+        post_entry = mid[i] - offset if side > 0 else mid[i] + offset
+        entry = next((k for k in range(i + 1, min(i + 1 + entry_patience, n))
+                      if (side > 0 and np.isfinite(lo[k]) and lo[k] <= post_entry)
+                      or (side < 0 and np.isfinite(hi[k]) and hi[k] >= post_entry)), None)
+        if entry is None:
+            continue
+        counts["n_filled"] += 1
+        ref = entry + hold_ticks
+        if ref >= n or not (np.isfinite(mid[ref]) and mid[ref] > 0):
+            continue
+        offset = k_bps * 1e-4 * mid[ref]
+        post_exit = mid[ref] + offset if side > 0 else mid[ref] - offset
+        exit_ = next((k for k in range(ref + 1, min(ref + 1 + exit_patience, n))
+                      if (side > 0 and np.isfinite(hi[k]) and hi[k] >= post_exit)
+                      or (side < 0 and np.isfinite(lo[k]) and lo[k] <= post_exit)), None)
+        exit_px, exit_maker = post_exit, True
+        if exit_ is None:
+            exit_ = min(ref + exit_patience, n - 1)
+            if not (np.isfinite(mid[exit_]) and mid[exit_] > 0):
+                continue
+            exit_px, exit_maker = mid[exit_], False
+            counts["n_exit_taker"] += 1
+        else:
+            counts["n_exit_maker"] += 1
+        gross = side * (exit_px - post_entry) / post_entry
+        rows.append({"entry_tick": int(ts[entry]), "exit_tick": int(ts[exit_]),
+                     "entry_px": float(post_entry), "exit_px": float(exit_px), "gross_ret": float(gross),
+                     "net_ret": float(gross - (maker + (maker if exit_maker else taker))),
+                     "exit_was_maker": exit_maker})
+        busy_until = exit_
+    frame = pd.DataFrame(rows)
+    frame.attrs.update(counts)
+    return frame
+
+
 def _score(net: np.ndarray, min_trades: int) -> dict | None:
     if len(net) < min_trades:
         return None
@@ -245,6 +307,9 @@ class Result:
     trigger_counts: dict
     sweep: pd.DataFrame
     fills: pd.DataFrame
+    # per-trade results behind sweep/fills, for cross-study comparison:
+    # ("fixed"|"vwap", rule, hold_s) -> entry_tick, gross_ret;  ("fill", rule, hold_s, k) -> entry_tick, net_ret
+    trades: dict = field(default_factory=dict)
 
 
 def run(cfg: Config) -> Result:
@@ -252,7 +317,7 @@ def run(cfg: Config) -> Result:
     if grid.empty:
         raise ValueError(f"no book data for {cfg.symbol}")
     span = (grid["tick_ts"].max() - grid["tick_ts"].min()) * cfg.tick_s / 86_400
-    counts, sweep_rows, fill_rows = {}, [], []
+    counts, sweep_rows, fill_rows, kept = {}, [], [], {}
     for rule in RULES:
         idx = triggers(grid, rule.conditions)
         counts[rule.name] = len(idx)
@@ -262,12 +327,14 @@ def run(cfg: Config) -> Result:
             trades = simulate_fixed_hold(grid, idx, max(1, hold // cfg.tick_s), rule.side)
             if len(trades) >= cfg.min_trades:
                 sweep_rows += _rows(rule, "fixed", hold, trades["gross_ret"].to_numpy(), cfg, {})
+                kept[("fixed", rule.name, hold)] = trades[["entry_tick", "gross_ret"]]
         if rule.vwap_exit:
             trades = simulate_vwap_exit(grid, idx, rule.side, max(1, cfg.vwap_failsafe_s // cfg.tick_s))
             if len(trades) >= cfg.min_trades:
                 extra = {"target_hit_rate": round(float(trades["target_hit"].mean()), 3),
                          "mean_ticks_held": round(float(trades["ticks_held"].mean()), 1)}
                 sweep_rows += _rows(rule, "vwap", -1, trades["gross_ret"].to_numpy(), cfg, extra)
+                kept[("vwap", rule.name, -1)] = trades[["entry_tick", "gross_ret"]]
         if cfg.fills:
             entry_p = max(1, cfg.entry_patience_s // cfg.tick_s)
             exit_p = max(1, cfg.exit_patience_s // cfg.tick_s)
@@ -278,6 +345,7 @@ def run(cfg: Config) -> Result:
                     if len(sim) < cfg.min_trades:
                         continue
                     s = _score(sim["net_ret"].to_numpy(), cfg.min_trades)
+                    kept[("fill", rule.name, hold, float(k))] = sim[["entry_tick", "net_ret"]]
                     a = sim.attrs
                     fill_rows.append({
                         "rule": rule.name, "hold_s": hold, "k_bps": float(k), "n": s["n"],
@@ -286,7 +354,7 @@ def run(cfg: Config) -> Result:
                         "exit_maker_rate": round(a["n_exit_maker"] / max(1, s["n"]), 3),
                         "mean_net_bps": round(s["mean"] * 1e4, 3), "sharpe": round(s["sharpe"], 3),
                         "total_bps": round(s["total"] * 1e4, 1)})
-    return Result(cfg, len(grid), span, counts, pd.DataFrame(sweep_rows), pd.DataFrame(fill_rows))
+    return Result(cfg, len(grid), span, counts, pd.DataFrame(sweep_rows), pd.DataFrame(fill_rows), kept)
 
 
 def render(result: Result) -> str:
@@ -321,7 +389,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbol", type=str.upper, default=d.symbol)
     parser.add_argument("--tick-sec", type=int, default=d.tick_s)
     parser.add_argument("--no-fills", action="store_true", help="skip the passive-fill simulation")
-    parser.add_argument("--k-bps", type=float, nargs="+", default=d.k_bps)
+    parser.add_argument("--k-bps", type=csv_list(float), default=d.k_bps,
+                        help="passive offsets inside the mid, comma-separated")
     parser.add_argument("--entry-patience-sec", type=int, default=d.entry_patience_s)
     parser.add_argument("--exit-patience-sec", type=int, default=d.exit_patience_s)
     parser.add_argument("--taker-bps", type=float, default=d.fees.taker_bps)

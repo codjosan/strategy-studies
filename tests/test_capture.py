@@ -98,3 +98,24 @@ def test_ws_streams_parse_exchange_messages():
     assert [r[:4] for r in writer.rows] == [[1000, 1100, "BTC", "hyperliquid"], [2000, 2100, "BTC", "okx"]]
     assert all(len(r) == len(BOOK_WS_COLUMNS) for r in writer.rows)
     assert counts == {"hyperliquid": 1, "okx": 1}
+
+
+def test_writer_restart_after_half_written_row_keeps_new_rows(tmp_path):
+    writer = DailyCSVWriter(tmp_path, "x", ["a", "b"], clock=lambda: "20260101")
+    writer.write([1, 2])
+    writer.close()
+    with open(tmp_path / "x_20260101.csv", "a") as fh:
+        fh.write("3,")                               # process killed mid-row
+    writer = DailyCSVWriter(tmp_path, "x", ["a", "b"], clock=lambda: "20260101")
+    writer.write([5, 6])
+    writer.close()
+    assert (tmp_path / "x_20260101.csv").read_text().splitlines() == ["a,b", "1,2", "3,", "5,6"]
+
+
+def test_writer_write_after_close_reopens(tmp_path):
+    writer = DailyCSVWriter(tmp_path, "x", ["a"], clock=lambda: "20260101")
+    writer.write([1])
+    writer.close()
+    writer.write([2])
+    writer.close()
+    assert (tmp_path / "x_20260101.csv").read_text().splitlines() == ["a", "1", "2"]

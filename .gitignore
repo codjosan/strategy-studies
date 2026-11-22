@@ -9,5 +9,6 @@ __pycache__/
 *.egg-info/
 sample_data/
 capture_data/
+capture_data_clean/
 *.csv.gz
 results/
